@@ -7,11 +7,43 @@ from kaggle_environments import make
 from state_tracker import StateTracker
 from route_planner import find_nearest_target, generate_movement_actions
 from market_trader import MarketTrader
+from animal_manager import AnimalManager
 
 
 # Global instances to persist across turns
 tracker = StateTracker()
 trader = MarketTrader()
+animal_mgr = AnimalManager()
+
+
+def should_buy_land(me, money):
+    """
+    Decide whether to buy land expansion.
+
+    Args:
+        me: The player's farm data.
+        money: Current money.
+
+    Returns:
+        True if should buy next quadrant, False otherwise.
+    """
+    quadrants = len(me.get("unlocked_quadrants", []))
+
+    # Cost progression: $1k, $2k, $4k
+    if quadrants == 1:
+        cost = 1000
+    elif quadrants == 2:
+        cost = 2000
+    elif quadrants == 3:
+        cost = 4000
+    else:
+        return False  # Already have all 4 quadrants
+
+    # Buy if we have 2x the cost (to be safe) and it's early-mid game
+    if money >= cost * 2 and quadrants < 3:
+        return True
+
+    return False
 
 
 def agent(obs):
@@ -43,13 +75,34 @@ def agent(obs):
         # Get market orders from trader
         market = trader.plan_market_orders(obs, tracker, me["money"])
 
+        # Land expansion logic
+        if should_buy_land(me, me["money"]):
+            market.append(["BUY_LAND"])
+
+        # Buy animals if needed
+        should_buy, animal_type = animal_mgr.should_buy_animal(obs, tracker, me["money"])
+        if should_buy and animal_type:
+            market.append(["BUY_ANIMAL", animal_type, 1])
+
         # Query state tracker for farm status
         unwatered_crops = tracker.get_crops_needing_water(day)
         ready_crops = tracker.get_crops_ready_to_harvest(day)
 
         # Farmer decision logic
+        # Check if standing on animal tile
+        is_animal_tile = (
+            isinstance(tile, dict)
+            and tile.get("kind") in ["COOP", "PASTURE"]
+            and tile.get("animal")
+        )
+
+        if is_animal_tile:
+            # Use animal manager for animal tiles
+            animal_actions = animal_mgr.plan_animal_actions(obs, tracker, [fx, fy], tile)
+            farmer_action = animal_actions if animal_actions else ["PASS"]
+
         # Priority 1: Harvest ready crops at current position
-        if farmer_pos in ready_crops:
+        elif farmer_pos in ready_crops:
             farmer_action = ["HARVEST"]
 
         # Priority 2: Water crops at current position if needed
